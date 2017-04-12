@@ -183,6 +183,8 @@ private:
 
     void rewriteSectionsExecutable();
 
+    std::string findRpathEntryForLibrary(const std::string lib);
+
 public:
 
     void rewriteSections();
@@ -203,7 +205,7 @@ public:
 
     void removeNeeded(const std::set<std::string> & libs);
 
-    void replaceNeeded(const std::map<std::string, std::string> & libs);
+    void replaceNeeded(const std::map<std::string, std::string> & libs, bool makeAbsolute);
 
     void printNeededLibs();
 
@@ -1333,9 +1335,26 @@ void ElfFile<ElfFileParamNames>::removeNeeded(const std::set<std::string> & libs
 }
 
 template<ElfFileParams>
-void ElfFile<ElfFileParamNames>::replaceNeeded(const std::map<std::string, std::string> & libs)
+std::string ElfFile<ElfFileParamNames>::findRpathEntryForLibrary(const std::string lib)
 {
-    if (libs.empty()) return;
+    for (auto & dirName : splitColonDelimitedString(rpath)) {
+        std::string libName = dirName + "/" + lib;
+        try {
+            if (getElfType(readFile(libName, sizeof(Elf32_Ehdr))).machine == rdi(hdr->e_machine)) {
+                return libName;
+            } else
+                debug("ignoring library '%s' because its machine type differs\n", libName.c_str());
+        } catch (SysError & e) {
+            if (e.errNo != ENOENT) throw;
+        }
+    }
+    return "";
+}
+
+template<ElfFileParams>
+void ElfFile<ElfFileParamNames>::replaceNeeded(const std::map<std::string, std::string> & libs, bool makeAbsolute)
+{
+    if (!makeAbsolute && libs.empty()) return;
 
     Elf_Shdr & shdrDynamic = findSection(".dynamic");
     Elf_Shdr & shdrDynStr = findSection(".dynstr");
@@ -1351,27 +1370,35 @@ void ElfFile<ElfFileParamNames>::replaceNeeded(const std::map<std::string, std::
         if (rdi(dyn->d_tag) == DT_NEEDED) {
             char * name = strTab + rdi(dyn->d_un.d_val);
             auto i = libs.find(name);
+            std::string replacement;
             if (i != libs.end()) {
-                auto replacement = i->second;
-
-                debug("replacing DT_NEEDED entry '%s' with '%s'\n", name, replacement.c_str());
-
-                // technically, the string referred by d_val could be used otherwise, too (although unlikely)
-                // we'll therefore add a new string
-                debug("resizing .dynstr ...\n");
-
-                std::string & newDynStr = replaceSection(".dynstr",
-                    rdi(shdrDynStr.sh_size) + replacement.size() + 1 + dynStrAddedBytes);
-                setSubstr(newDynStr, rdi(shdrDynStr.sh_size) + dynStrAddedBytes, replacement + '\0');
-
-                wri(dyn->d_un.d_val, rdi(shdrDynStr.sh_size) + dynStrAddedBytes);
-
-                dynStrAddedBytes += replacement.size() + 1;
-
-                changed = true;
+                replacement = i->second;
+            } else if (makeAbsolute) {
+                replacement = findRpathEntryForLibrary(name);
+                if (replacement.empty()) {
+                    debug("keeping DT_NEEDED entry '%s' as we couldn't make its path absolute\n", name);
+                    continue;
+                }
             } else {
                 debug("keeping DT_NEEDED entry '%s'\n", name);
+                continue;
             }
+
+            debug("replacing DT_NEEDED entry '%s' with '%s'\n", name, replacement.c_str());
+
+            // technically, the string referred by d_val could be used otherwise, too (although unlikely)
+            // we'll therefore add a new string
+            debug("resizing .dynstr ...\n");
+
+            std::string & newDynStr = replaceSection(".dynstr",
+                rdi(shdrDynStr.sh_size) + replacement.size() + 1 + dynStrAddedBytes);
+            setSubstr(newDynStr, rdi(shdrDynStr.sh_size) + dynStrAddedBytes, replacement + '\0');
+
+            wri(dyn->d_un.d_val, rdi(shdrDynStr.sh_size) + dynStrAddedBytes);
+
+            dynStrAddedBytes += replacement.size() + 1;
+
+            changed = true;
         }
         if (rdi(dyn->d_tag) == DT_VERNEEDNUM) {
             verNeedNum = rdi(dyn->d_un.d_val);
@@ -1546,6 +1573,7 @@ static std::string newRPath;
 static std::set<std::string> neededLibsToRemove;
 static std::map<std::string, std::string> neededLibsToReplace;
 static std::set<std::string> neededLibsToAdd;
+static bool makeNeededAbsolute = false;
 static bool printNeeded = false;
 static bool noDefaultLib = false;
 
@@ -1577,7 +1605,7 @@ static void patchElf2(ElfFile && elfFile)
     if (printNeeded) elfFile.printNeededLibs();
 
     elfFile.removeNeeded(neededLibsToRemove);
-    elfFile.replaceNeeded(neededLibsToReplace);
+    elfFile.replaceNeeded(neededLibsToReplace, makeNeededAbsolute);
     elfFile.addNeeded(neededLibsToAdd);
 
     if (noDefaultLib)
@@ -1623,6 +1651,7 @@ void showHelp(const std::string & progName)
   [--add-needed LIBRARY]\n\
   [--remove-needed LIBRARY]\n\
   [--replace-needed LIBRARY NEW_LIBRARY]\n\
+  [--make-needed-absolute\n\
   [--print-needed]\n\
   [--no-default-lib]\n\
   [--debug]\n\
@@ -1697,6 +1726,9 @@ int mainWrapped(int argc, char * * argv)
         }
         else if (arg == "--print-needed") {
             printNeeded = true;
+        }
+        else if (arg == "--make-needed-absolute") {
+            makeNeededAbsolute = true;
         }
         else if (arg == "--add-needed") {
             if (++i == argc) error("missing argument");
