@@ -1427,30 +1427,36 @@ void ElfFile<ElfFileParamNames>::replaceNeeded(const std::map<std::string, std::
         unsigned int verStrAddedBytes = 0;
 
         Elf_Verneed * need = (Elf_Verneed *) (contents + rdi(shdrVersionR.sh_offset));
-        while (verNeedNum > 0) {
+        // the Elf_Verneed structures form a linked list, so jump to next entry
+        for (;verNeedNum > 0; need = (Elf_Verneed *) (((char *) need) + rdi(need->vn_next)), --verNeedNum) {
             char * file = verStrTab + rdi(need->vn_file);
             auto i = libs.find(file);
+            std::string replacement;
             if (i != libs.end()) {
-                auto replacement = i->second;
-
-                debug("replacing .gnu.version_r entry '%s' with '%s'\n", file, replacement.c_str());
-                debug("resizing string section %s ...\n", versionRStringsSName.c_str());
-
-                std::string & newVerDynStr = replaceSection(versionRStringsSName,
-                    rdi(shdrVersionRStrings.sh_size) + replacement.size() + 1 + verStrAddedBytes);
-                setSubstr(newVerDynStr, rdi(shdrVersionRStrings.sh_size) + verStrAddedBytes, replacement + '\0');
-
-                wri(need->vn_file, rdi(shdrVersionRStrings.sh_size) + verStrAddedBytes);
-
-                verStrAddedBytes += replacement.size() + 1;
-
-                changed = true;
+                replacement = i->second;
+            } else if (makeAbsolute) {
+                replacement = findRpathEntryForLibrary(file);
+                if (replacement.empty()) {
+                    debug("keeping .gnu.version_r entry '%s' as we couldn't make its path absolute\n", file);
+                    continue;
+                }
             } else {
                 debug("keeping .gnu.version_r entry '%s'\n", file);
+                continue;
             }
-            // the Elf_Verneed structures form a linked list, so jump to next entry
-            need = (Elf_Verneed *) (((char *) need) + rdi(need->vn_next));
-            --verNeedNum;
+
+            debug("replacing .gnu.version_r entry '%s' with '%s'\n", file, replacement.c_str());
+            debug("resizing string section %s ...\n", versionRStringsSName.c_str());
+
+            std::string & newVerDynStr = replaceSection(versionRStringsSName,
+                rdi(shdrVersionRStrings.sh_size) + replacement.size() + 1 + verStrAddedBytes);
+            setSubstr(newVerDynStr, rdi(shdrVersionRStrings.sh_size) + verStrAddedBytes, replacement + '\0');
+
+            wri(need->vn_file, rdi(shdrVersionRStrings.sh_size) + verStrAddedBytes);
+
+            verStrAddedBytes += replacement.size() + 1;
+
+            changed = true;
         }
     }
 }
