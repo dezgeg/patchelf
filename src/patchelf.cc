@@ -99,6 +99,10 @@ private:
     std::vector<Elf_Phdr> phdrs;
     std::vector<Elf_Shdr> shdrs;
 
+    std::vector<std::string> neededLibs;
+    Elf_Dyn * dynRPath = 0, * dynRunPath = 0;
+    char * rpath = 0;
+
     bool littleEndian;
 
     bool changed = false;
@@ -425,6 +429,42 @@ ElfFile<ElfFileParamNames>::ElfFile(FileContents fileContents)
     sectionsByOldIndex.resize(hdr->e_shnum);
     for (unsigned int i = 1; i < rdi(hdr->e_shnum); ++i)
         sectionsByOldIndex[i] = getSectionName(shdrs[i]);
+
+    Elf_Shdr & shdrDynamic = findSection(".dynamic");
+
+    /* !!! We assume that the virtual address in the DT_STRTAB entry
+       of the dynamic section corresponds to the .dynstr section. */
+    Elf_Shdr & shdrDynStr = findSection(".dynstr");
+    char * strTab = (char *) contents + rdi(shdrDynStr.sh_offset);
+
+
+    /* Walk through the dynamic section, look for the RPATH/RUNPATH
+       entry.
+
+       According to the ld.so docs, DT_RPATH is obsolete, we should
+       use DT_RUNPATH.  DT_RUNPATH has two advantages: it can be
+       overriden by LD_LIBRARY_PATH, and it's scoped (the DT_RUNPATH
+       for an executable or library doesn't affect the search path for
+       libraries used by it).  DT_RPATH is ignored if DT_RUNPATH is
+       present.  The binutils 'ld' still generates only DT_RPATH,
+       unless you use its '--enable-new-dtag' option, in which case it
+       generates a DT_RPATH and DT_RUNPATH pointing at the same
+       string. */
+    Elf_Dyn * dyn = (Elf_Dyn *) (contents + rdi(shdrDynamic.sh_offset));
+    for ( ; rdi(dyn->d_tag) != DT_NULL; dyn++) {
+        if (rdi(dyn->d_tag) == DT_RPATH) {
+            dynRPath = dyn;
+            /* Only use DT_RPATH if there is no DT_RUNPATH. */
+            if (!dynRunPath)
+                rpath = strTab + rdi(dyn->d_un.d_val);
+        }
+        else if (rdi(dyn->d_tag) == DT_RUNPATH) {
+            dynRunPath = dyn;
+            rpath = strTab + rdi(dyn->d_un.d_val);
+        }
+        else if (rdi(dyn->d_tag) == DT_NEEDED)
+            neededLibs.push_back(std::string(strTab + rdi(dyn->d_un.d_val)));
+    }
 }
 
 
@@ -1109,39 +1149,6 @@ void ElfFile<ElfFileParamNames>::modifyRPath(RPathOp op,
     /* !!! We assume that the virtual address in the DT_STRTAB entry
        of the dynamic section corresponds to the .dynstr section. */
     Elf_Shdr & shdrDynStr = findSection(".dynstr");
-    char * strTab = (char *) contents + rdi(shdrDynStr.sh_offset);
-
-
-    /* Walk through the dynamic section, look for the RPATH/RUNPATH
-       entry.
-
-       According to the ld.so docs, DT_RPATH is obsolete, we should
-       use DT_RUNPATH.  DT_RUNPATH has two advantages: it can be
-       overriden by LD_LIBRARY_PATH, and it's scoped (the DT_RUNPATH
-       for an executable or library doesn't affect the search path for
-       libraries used by it).  DT_RPATH is ignored if DT_RUNPATH is
-       present.  The binutils 'ld' still generates only DT_RPATH,
-       unless you use its '--enable-new-dtag' option, in which case it
-       generates a DT_RPATH and DT_RUNPATH pointing at the same
-       string. */
-    std::vector<std::string> neededLibs;
-    Elf_Dyn * dyn = (Elf_Dyn *) (contents + rdi(shdrDynamic.sh_offset));
-    Elf_Dyn * dynRPath = 0, * dynRunPath = 0;
-    char * rpath = 0;
-    for ( ; rdi(dyn->d_tag) != DT_NULL; dyn++) {
-        if (rdi(dyn->d_tag) == DT_RPATH) {
-            dynRPath = dyn;
-            /* Only use DT_RPATH if there is no DT_RUNPATH. */
-            if (!dynRunPath)
-                rpath = strTab + rdi(dyn->d_un.d_val);
-        }
-        else if (rdi(dyn->d_tag) == DT_RUNPATH) {
-            dynRunPath = dyn;
-            rpath = strTab + rdi(dyn->d_un.d_val);
-        }
-        else if (rdi(dyn->d_tag) == DT_NEEDED)
-            neededLibs.push_back(std::string(strTab + rdi(dyn->d_un.d_val)));
-    }
 
     if (op == rpPrint) {
         printf("%s\n", rpath ? rpath : "");
