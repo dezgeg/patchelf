@@ -1149,6 +1149,7 @@ void ElfFile<ElfFileParamNames>::modifyRPath(RPathOp op,
     /* !!! We assume that the virtual address in the DT_STRTAB entry
        of the dynamic section corresponds to the .dynstr section. */
     Elf_Shdr & shdrDynStr = findSection(".dynstr");
+    char * strTab = (char *) contents + rdi(shdrDynStr.sh_offset);
 
     if (op == rpPrint) {
         printf("%s\n", rpath ? rpath : "");
@@ -1219,15 +1220,18 @@ void ElfFile<ElfFileParamNames>::modifyRPath(RPathOp op,
         for ( ; rdi(dyn->d_tag) != DT_NULL; dyn++) {
             if (rdi(dyn->d_tag) == DT_RPATH) {
                 debug("removing DT_RPATH entry\n");
+                dynRPath = nullptr;
                 changed = true;
             } else if (rdi(dyn->d_tag) == DT_RUNPATH) {
                 debug("removing DT_RUNPATH entry\n");
+                dynRunPath = nullptr;
                 changed = true;
             } else {
                 *last++ = *dyn;
             }
         }
         memset(last, 0, sizeof(Elf_Dyn) * (dyn - last));
+        rpath = nullptr;
         return;
     }
 
@@ -1254,6 +1258,7 @@ void ElfFile<ElfFileParamNames>::modifyRPath(RPathOp op,
 
     if (forceRPath && dynRPath && dynRunPath) { /* convert DT_RUNPATH to DT_RPATH */
         dynRunPath->d_tag = DT_IGNORE;
+        dynRunPath = nullptr;
     }
 
     if (newRPath.size() <= rpathSize) {
@@ -1267,6 +1272,7 @@ void ElfFile<ElfFileParamNames>::modifyRPath(RPathOp op,
     std::string & newDynStr = replaceSection(".dynstr",
         rdi(shdrDynStr.sh_size) + newRPath.size() + 1);
     setSubstr(newDynStr, rdi(shdrDynStr.sh_size), newRPath + '\0');
+    rpath = strTab + shdrDynStr.sh_size;
 
     /* Update the DT_RUNPATH and DT_RPATH entries. */
     if (dynRunPath || dynRPath) {
@@ -1293,6 +1299,7 @@ void ElfFile<ElfFileParamNames>::modifyRPath(RPathOp op,
         wri(newDyn.d_tag, forceRPath ? DT_RPATH : DT_RUNPATH);
         newDyn.d_un.d_val = shdrDynStr.sh_size;
         setSubstr(newDynamic, 0, std::string((char *) &newDyn, sizeof(Elf_Dyn)));
+        *(forceRPath ? &dynRPath : &dynRunPath) = (Elf_Dyn*)newDynamic.c_str();
     }
 }
 
