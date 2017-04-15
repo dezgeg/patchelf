@@ -1424,7 +1424,7 @@ void ElfFile<ElfFileParamNames>::replaceNeeded(const std::map<std::string, std::
 
         debug("found .gnu.version_r with %i entries, strings in %s\n", verNeedNum, versionRStringsSName.c_str());
 
-        unsigned int verStrAddedBytes = 0;
+        unsigned int verStrAddedBytes = versionRStringsSName == ".dynstr" ? dynStrAddedBytes : 0;
 
         Elf_Verneed * need = (Elf_Verneed *) (contents + rdi(shdrVersionR.sh_offset));
         // the Elf_Verneed structures form a linked list, so jump to next entry
